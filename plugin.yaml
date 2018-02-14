@@ -6,6 +6,16 @@ backend:
     executable: plugin.exe
 settings_schema:
     settings:
+        - key: SingleGIFTrigger
+          type: text
+          display_name: Post GIF command trigger
+          help_text: Set the trigger word for the command that posts a single GIF
+          default: giphy
+        - key: MultipleGIFTrigger
+          type: text
+          display_name: GIFs preview command trigger
+          help_text: Set the trigger word for the command that displays a preview list of GIFs
+          default: gifs
         - key: APIKey
           type: text
           display_name: Giphy API Key

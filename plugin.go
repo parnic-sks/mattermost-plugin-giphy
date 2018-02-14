@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -27,18 +28,50 @@ type GiphyPlugin struct {
 }
 
 type GiphyPluginConfiguration struct {
-	Rating    string
-	Language  string
-	Rendition string
-	APIKey    string
+	Rating             string
+	Language           string
+	Rendition          string
+	APIKey             string
+	SingleGIFTrigger   string
+	MultipleGIFTrigger string
+}
+
+func (c *GiphyPluginConfiguration) IsValid() error {
+	if len(c.APIKey) == 0 {
+		return fmt.Errorf("APIKey is not configured.")
+	} else if len(c.SingleGIFTrigger) == 0 {
+		return fmt.Errorf("SingleGIFTrigger is not configured.")
+	} else if len(c.MultipleGIFTrigger) == 0 {
+		return fmt.Errorf("MultipleGIFTrigger is not configured.")
+	}
+
+	return nil
 }
 
 // OnActivate register the plugin commands
 func (p *GiphyPlugin) OnActivate(api plugin.API) error {
 	p.api = api
 	p.enabled = true
+
+	if err := p.OnConfigurationChange(); err != nil {
+		return err
+	}
+
+	config := p.config()
+	if err := config.IsValid(); err != nil {
+		return err
+	}
+
+	configStr := fmt.Sprintf("API Key: {%s} | Single trigger: {%s} | Multiple trigger: {%s}", config.APIKey, config.SingleGIFTrigger, config.MultipleGIFTrigger)
+	if config.SingleGIFTrigger == "" {
+		return errors.New("Giphy Plugin: could not activate with an empty config.SingleGIFTrigger" + configStr)
+	}
+	if config.MultipleGIFTrigger == "" {
+		return errors.New("Giphy Plugin: could not activate with an empty config.MultipleGIFTrigger" + configStr)
+	}
+
 	err := api.RegisterCommand(&model.Command{
-		Trigger:          triggerGif,
+		Trigger:          config.SingleGIFTrigger,
 		Description:      "Posts a Giphy GIF that matches the keyword(s)",
 		DisplayName:      "Giphy command",
 		AutoComplete:     true,
@@ -50,7 +83,7 @@ func (p *GiphyPlugin) OnActivate(api plugin.API) error {
 	}
 
 	err = api.RegisterCommand(&model.Command{
-		Trigger:          triggerGifs,
+		Trigger:          config.MultipleGIFTrigger,
 		Description:      "Shows a preview of 10 GIFS matching the keyword(s)",
 		DisplayName:      "Giphy preview command",
 		AutoComplete:     true,
