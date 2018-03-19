@@ -1,7 +1,6 @@
 package main
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"strings"
@@ -12,12 +11,6 @@ import (
 	"github.com/mattermost/mattermost-server/plugin/rpcplugin"
 )
 
-const (
-	// Triggers used to define slash commands
-	triggerGif  = "gif"
-	triggerGifs = "gifs"
-)
-
 // GiphyPlugin is a Mattermost plugin that adds a /gif slash command
 // to display a GIF based on user keywords.
 type GiphyPlugin struct {
@@ -25,31 +18,25 @@ type GiphyPlugin struct {
 	configuration atomic.Value
 	gifProvider   gifProvider
 	enabled       bool
+	firstLoad     bool
+	commands      giphyPluginCommands
 }
 
-type GiphyPluginConfiguration struct {
-	Rating             string
-	Language           string
-	Rendition          string
-	APIKey             string
-	SingleGIFTrigger   string
-	MultipleGIFTrigger string
-}
-
-func (c *GiphyPluginConfiguration) IsValid() error {
-	if len(c.APIKey) == 0 {
-		return fmt.Errorf("APIKey is not configured.")
-	} else if len(c.SingleGIFTrigger) == 0 {
-		return fmt.Errorf("SingleGIFTrigger is not configured.")
-	} else if len(c.MultipleGIFTrigger) == 0 {
-		return fmt.Errorf("MultipleGIFTrigger is not configured.")
-	}
-
-	return nil
+type giphyPluginCommands struct {
+	gifCommand  *model.Command
+	gifsCommand *model.Command
 }
 
 // OnActivate register the plugin commands
 func (p *GiphyPlugin) OnActivate(api plugin.API) error {
+
+	//@Joram Wilander: the plugin crashed after adding two blocks of code : here is the first
+	api.RegisterCommand(&model.Command{
+		Trigger: "test",
+		TeamId:  "",
+	})
+	// END
+
 	p.api = api
 	p.enabled = true
 
@@ -58,54 +45,66 @@ func (p *GiphyPlugin) OnActivate(api plugin.API) error {
 	}
 
 	config := p.config()
-	if err := config.IsValid(); err != nil {
+	commands := giphyPluginCommands{
+		gifCommand:  p.createGifCommand(config.SingleGIFTrigger),
+		gifsCommand: p.createGifCommand(config.MultipleGIFTrigger),
+	}
+
+	if err := api.RegisterCommand(commands.gifCommand); err != nil {
 		return err
 	}
 
-	configStr := fmt.Sprintf("API Key: {%s} | Single trigger: {%s} | Multiple trigger: {%s}", config.APIKey, config.SingleGIFTrigger, config.MultipleGIFTrigger)
-	if config.SingleGIFTrigger == "" {
-		return errors.New("Giphy Plugin: could not activate with an empty config.SingleGIFTrigger" + configStr)
-	}
-	if config.MultipleGIFTrigger == "" {
-		return errors.New("Giphy Plugin: could not activate with an empty config.MultipleGIFTrigger" + configStr)
-	}
-
-	err := api.RegisterCommand(&model.Command{
-		Trigger:          config.SingleGIFTrigger,
-		Description:      "Posts a Giphy GIF that matches the keyword(s)",
-		DisplayName:      "Giphy command",
-		AutoComplete:     true,
-		AutoCompleteDesc: "Posts a Giphy GIF that matches the keyword(s)",
-		AutoCompleteHint: "happy kitty",
-	})
-	if err != nil {
+	if err := api.RegisterCommand(commands.gifsCommand); err != nil {
 		return err
 	}
+	p.commands = commands
 
-	err = api.RegisterCommand(&model.Command{
-		Trigger:          config.MultipleGIFTrigger,
-		Description:      "Shows a preview of 10 GIFS matching the keyword(s)",
-		DisplayName:      "Giphy preview command",
-		AutoComplete:     true,
-		AutoCompleteDesc: "Shows a preview of 10 GIFS matching the keyword(s)",
-		AutoCompleteHint: "happy kitty",
-	})
-	if err != nil {
-		return err
-	}
-
-	return p.OnConfigurationChange()
+	return nil
 }
 
 func (p *GiphyPlugin) config() *GiphyPluginConfiguration {
-	return p.configuration.Load().(*GiphyPluginConfiguration)
+	config := p.configuration.Load()
+	if config != nil {
+		return config.(*GiphyPluginConfiguration)
+	}
+	return nil
 }
 
+// OnConfigurationChange handles the changes of plugin configuration
 func (p *GiphyPlugin) OnConfigurationChange() error {
+
 	var configuration GiphyPluginConfiguration
-	err := p.api.LoadPluginConfiguration(&configuration)
+	if err := p.api.LoadPluginConfiguration(&configuration); err != nil {
+		return err
+	}
+
+	if err := configuration.EnsureValidity(); err != nil {
+		return err
+	}
+
+	if !p.firstLoad {
+		if oldConfig := p.config(); oldConfig != nil {
+			if oldConfig.SingleGIFTrigger != configuration.SingleGIFTrigger && p.commands.gifCommand != nil {
+				if err := p.api.UnregisterCommand("", p.commands.gifCommand.Trigger); err != nil {
+					return err
+				}
+				if err := p.api.RegisterCommand(p.createGifCommand(configuration.SingleGIFTrigger)); err != nil {
+					return err
+				}
+			}
+			if oldConfig.MultipleGIFTrigger != configuration.MultipleGIFTrigger && p.commands.gifsCommand != nil {
+				if err := p.api.UnregisterCommand("", p.commands.gifsCommand.Trigger); err != nil {
+					return err
+				}
+				if err := p.api.RegisterCommand(p.createGifCommand(configuration.MultipleGIFTrigger)); err != nil {
+					return err
+				}
+			}
+		}
+	}
 	p.configuration.Store(&configuration)
-	return err
+	p.firstLoad = false
+	return nil
 }
 
 // OnDeactivate handles plugin deactivation
@@ -114,27 +113,58 @@ func (p *GiphyPlugin) OnDeactivate() error {
 	return nil
 }
 
+func (p *GiphyPlugin) createGifCommand(trigger string) *model.Command {
+	return &model.Command{
+		Trigger:          trigger,
+		Description:      "Posts a Giphy GIF that matches the keyword(s)",
+		DisplayName:      "Giphy command",
+		AutoComplete:     true,
+		AutoCompleteDesc: "Posts a Giphy GIF that matches the keyword(s)",
+		AutoCompleteHint: "happy kitty",
+	}
+}
+
+func (p *GiphyPlugin) createGifsCommand(trigger string) *model.Command {
+	return &model.Command{
+		Trigger:          trigger,
+		Description:      "Shows a preview of 10 GIFS matching the keyword(s)",
+		DisplayName:      "Giphy preview command",
+		AutoComplete:     true,
+		AutoCompleteDesc: "Shows a preview of 10 GIFS matching the keyword(s)",
+		AutoCompleteHint: "happy kitty",
+	}
+}
+
 // ExecuteCommand returns a post that displays a GIF choosen using Giphy
 func (p *GiphyPlugin) ExecuteCommand(args *model.CommandArgs) (*model.CommandResponse, *model.AppError) {
+	//@Joram Wilander: the plugin crashed after adding two blocks of code : here is the second
+	// (trying to make unregistering work because I haven't yet managed to)
+	if strings.HasPrefix(args.Command, "/test") {
+		p.api.UnregisterCommand("", "test")
+	}
+	//END
+
 	if !p.enabled {
 		return nil, appError("Cannot execute command while the plugin is disabled.", nil)
 	}
 	if p.api == nil {
 		return nil, appError("Cannot access the plugin API.", nil)
 	}
-	if strings.HasPrefix(args.Command, "/"+triggerGifs) {
+	config := p.config()
+	if strings.HasPrefix(args.Command, "/"+config.MultipleGIFTrigger) {
 		return p.executeCommandGifs(args.Command)
 	}
-	if strings.HasPrefix(args.Command, "/"+triggerGif) {
+	if strings.HasPrefix(args.Command, "/"+config.SingleGIFTrigger) {
 		return p.executeCommandGif(args.Command)
 	}
 
-	return nil, appError("Command trigger "+args.Command+"is not supported by this plugin.", nil)
+	return nil, appError("Command trigger "+args.Command+" is not supported by this plugin.", nil)
 }
 
 // executeCommandGif returns a public post containing a matching GIF
 func (p *GiphyPlugin) executeCommandGif(command string) (*model.CommandResponse, *model.AppError) {
-	keywords := getCommandKeywords(command, triggerGif)
+	config := p.config()
+	keywords := getCommandKeywords(command, config.SingleGIFTrigger)
 	gifURL, err := p.gifProvider.getGifURL(p.config(), keywords)
 	if err != nil {
 		return nil, appError("Unable to get GIF URL", err)
@@ -146,13 +176,14 @@ func (p *GiphyPlugin) executeCommandGif(command string) (*model.CommandResponse,
 
 // executeCommandGif returns a private post containing a list of matching GIFs
 func (p *GiphyPlugin) executeCommandGifs(command string) (*model.CommandResponse, *model.AppError) {
-	keywords := getCommandKeywords(command, triggerGifs)
+	config := p.config()
+	keywords := getCommandKeywords(command, config.MultipleGIFTrigger)
 	gifURLs, err := p.gifProvider.getMultipleGifsURL(p.config(), keywords)
 	if err != nil {
 		return nil, appError("Unable to get GIF URL", err)
 	}
 
-	text := fmt.Sprintf(" *Suggestions for '%s':*", keywords)
+	text := fmt.Sprintf(" *Suggestions for '%s':*\n", keywords)
 	for i, url := range gifURLs {
 		if i > 0 {
 			text += "\t"
@@ -178,5 +209,6 @@ func appError(message string, err error) *model.AppError {
 func main() {
 	plugin := GiphyPlugin{}
 	plugin.gifProvider = &giphyProvider{}
+	plugin.firstLoad = true
 	rpcplugin.Main(&plugin)
 }
